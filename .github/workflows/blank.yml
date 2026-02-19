@@ -1,4 +1,4 @@
-name: Run Databricks Notebook and Wait for Completion
+name: Execution of Databricks Notebook 
 
 on:
   workflow_dispatch:
