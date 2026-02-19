@@ -1,0 +1,60 @@
+name: Run Databricks Notebook and Wait for Completion
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-databricks-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Databricks Job
+        run: |
+          set -e
+          echo "🚀 Triggering Databricks Job ID: ${{ secrets.DATABRICKS_JOB_ID }}"
+          response=$(curl -s -X POST "${{ secrets.DATABRICKS_HOST }}/api/2.1/jobs/run-now" \
+            -H "Authorization: Bearer ${{ secrets.DATABRICKS_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_id\": ${{ secrets.DATABRICKS_JOB_ID }}}")
+          echo "Response: $response"
+          run_id=$(echo "$response" | jq -r '.run_id')
+          if [[ -z "$run_id" || "$run_id" == "null" ]]; then
+            echo "❌ Failed to start Databricks job"
+            exit 1
+          fi
+          echo "✅ Job started successfully. Run ID: $run_id"
+          # Export run_id to environment for next step
+          echo "RUN_ID=$run_id" >> $GITHUB_ENV
+      - name: Wait for Databricks Job to Complete
+        run: |
+          set +e   # disable exit on error, we'll handle failures manually
+          echo "⏳ Waiting for Databricks job (Run ID: $RUN_ID)"
+          MAX_RETRIES=60
+          SLEEP_TIME=30
+          RETRY=0
+          while [ $RETRY -lt $MAX_RETRIES ]; do
+            response=$(curl -s -X GET "${{ secrets.DATABRICKS_HOST }}/api/2.1/jobs/runs/get?run_id=$RUN_ID" \
+              -H "Authorization: Bearer ${{ secrets.DATABRICKS_TOKEN }}")
+            LIFE_CYCLE=$(echo "$response" | jq -r '.state.life_cycle_state')
+            RESULT_STATE=$(echo "$response" | jq -r '.state.result_state')
+            echo "Attempt $((RETRY+1)): Lifecycle=$LIFE_CYCLE, Result=$RESULT_STATE"
+            # break if job is finished
+            if [[ "$LIFE_CYCLE" == "TERMINATED" || "$LIFE_CYCLE" == "INTERNAL_ERROR" ]]; then
+              break
+            fi
+            ((RETRY++))
+            sleep $SLEEP_TIME
+          done
+          echo "Final lifecycle: $LIFE_CYCLE"
+          echo "Final result: $RESULT_STATE"
+          if [[ "$LIFE_CYCLE" != "TERMINATED" && "$LIFE_CYCLE" != "INTERNAL_ERROR" ]]; then
+            echo "❌ Databricks job did not finish within the expected time"
+            exit 1
+          fi
+          if [[ "$RESULT_STATE" == "SUCCESS" ]]; then
+            echo "✅ Databricks job completed successfully"
+            exit 0
+          else
+            echo "❌ Databricks job failed or did not complete successfully"
+            echo "Check run details: ${{ secrets.DATABRICKS_HOST }}#job/${{ secrets.DATABRICKS_JOB_ID }}/run/$RUN_ID"
+            exit 1
+          fi
